@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\SaleResource\Pages;
 use App\Models\Sale;
 use App\Models\Client;
+use Carbon\Carbon;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -16,6 +17,7 @@ use Filament\Support\Enums\FontWeight;
 use Filament\Notifications\Notification;
 use Filament\Forms\Components\Wizard;
 use Filament\Forms\Components\Wizard\Step;
+use Filament\Navigation\NavigationItem;
 
 class SaleResource extends Resource
 {
@@ -23,6 +25,12 @@ class SaleResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-shopping-cart';
     protected static ?string $modelLabel = 'Venta';
     protected static ?string $pluralModelLabel = 'Ventas';
+
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->withTrashed(); // Esto es crucial para que se muestren las ventas anuladas
+    }
 
     public static function form(Form $form): Form
     {
@@ -59,6 +67,13 @@ class SaleResource extends Resource
                     ->money('COP')
                     ->sortable(),
 
+                // Agregar esta columna para el estado
+                Tables\Columns\TextColumn::make('deleted_at')
+                    ->label('Estado')
+                    ->formatStateUsing(fn($state): string => $state === null ? 'ACTIVA' : 'ANULADA')
+                    ->badge()
+                    ->color(fn($state): string => $state === null ? 'success' : 'danger'),
+
                 Tables\Columns\IconColumn::make('firma_validada')
                     ->label('Firma')
                     ->boolean()
@@ -67,6 +82,7 @@ class SaleResource extends Resource
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Fecha')
                     ->dateTime('d/m/Y h:i A')
+                    ->timezone('America/Bogota')
                     ->sortable(),
             ])
             ->filters([
@@ -76,6 +92,12 @@ class SaleResource extends Resource
                         'Almuerzo' => 'Almuerzo',
                         'Otro' => 'Otro',
                     ]),
+                Tables\Filters\TrashedFilter::make()
+                    ->label('Estado de Ventas')
+                    ->trueLabel('Mostrar solo anuladas')
+                    ->falseLabel('Mostrar solo activas')
+                    ->placeholder('Mostrar todas')
+                    ->default(null),
                 Tables\Filters\Filter::make('created_at')
                     ->form([
                         Forms\Components\DatePicker::make('desde')
@@ -95,10 +117,83 @@ class SaleResource extends Resource
                             );
                     })
             ])
-            ->actions([])
+            ->actions([
+                // Ver detalles de la venta
+                Tables\Actions\ViewAction::make()
+                    ->label('Ver Detalles')
+                    ->modalHeading('Detalles de la Venta')
+                    ->form([
+                        Forms\Components\Section::make('Información de la Venta')
+                            ->schema([
+                                Forms\Components\TextInput::make('concepto')
+                                    ->label('Concepto')
+                                    ->disabled(),
+                                Forms\Components\TextInput::make('concepto_detalle')
+                                    ->label('Detalle')
+                                    ->visible(fn($state): bool => !is_null($state) && $state !== '')
+                                    ->disabled(),
+                                Forms\Components\TextInput::make('precio')
+                                    ->label('Precio')
+                                    ->prefix('$')
+                                    ->disabled(),
+                                Forms\Components\TextInput::make('created_at')
+                                    ->label('Fecha de Creación')
+                                    ->formatStateUsing(function ($state) {
+                                        return now()->parse($state)->setTimezone('America/Bogota')->format('d/m/Y h:i A');
+                                    })
+                                    ->disabled(),
+                                Forms\Components\TextInput::make('deleted_at')
+                                    ->label('Fecha de Anulación')
+                                    ->formatStateUsing(function ($state) {
+                                        return $state ? now()->parse($state)->setTimezone('America/Bogota')->format('d/m/Y h:i A') : '';
+                                    })
+                                    ->disabled()
+                                    ->visible(fn($state) => $state !== null),
+                            ])
+                            ->columns(2),
+                    ])
+                    ->modalWidth('4xl')
+                    ->modalSubmitAction(false)
+                    ->modalCancelActionLabel('Cerrar'),
+
+                // Anular venta
+                Tables\Actions\Action::make('anular')
+                    ->label('Anular Venta')
+                    ->icon('heroicon-o-x-circle')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Anular Venta')
+                    ->modalDescription('¿Está seguro que desea anular esta venta? Esta acción no se puede deshacer.')
+                    ->modalSubmitActionLabel('Sí, anular venta')
+                    ->modalCancelActionLabel('No, cancelar')
+                    ->action(function (Sale $record) {
+                        if ($record->trashed()) {
+                            Notification::make()
+                                ->danger()
+                                ->title('Error')
+                                ->body('Esta venta ya se encuentra anulada')
+                                ->send();
+                            return;
+                        }
+
+                        $record->delete();
+
+                        Notification::make()
+                            ->success()
+                            ->title('Venta Anulada')
+                            ->body('La venta ha sido anulada correctamente')
+                            ->send();
+                    })
+                    ->visible(fn(Sale $record): bool => !$record->trashed()),
+            ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+                    Tables\Actions\DeleteBulkAction::make()
+                        ->label('Anular Seleccionadas')
+                        ->modalHeading('Anular Ventas Seleccionadas')
+                        ->modalDescription('¿Está seguro que desea anular las ventas seleccionadas? Esta acción no se puede deshacer.')
+                        ->modalSubmitActionLabel('Sí, anular ventas')
+                        ->modalCancelActionLabel('No, cancelar'),
                 ]),
             ])
             ->headerActions([
@@ -210,7 +305,7 @@ class SaleResource extends Resource
                                             $precio = $get('precio') ? number_format($get('precio'), 2, ',', '.') : '0,00';
 
                                             return "{$client->nombre_completo}\n" .
-                                                "Compro  {$concepto}" .
+                                                "Compró {$concepto}" .
                                                 ($detalle ? " - {$detalle}" : '') .
                                                 "\nPor: $" . $precio;
                                         }),
@@ -241,7 +336,8 @@ class SaleResource extends Resource
                             'concepto' => $data['concepto'],
                             'precio' => $data['precio'],
                             'firma_validada' => true,
-                            'fecha_venta' => $data['fecha_venta'],
+                            'created_at' => now(), // Esto asegura que se use la fecha del servidor
+                            'fecha_venta' => now(), // Esto también usará la fecha del servidor
                         ];
 
                         if (isset($data['concepto_detalle']) && $data['concepto_detalle'] !== null) {
@@ -264,6 +360,22 @@ class SaleResource extends Resource
     {
         return [
             'index' => Pages\ListSales::route('/'),
+            'informe' => Pages\Informe::route('/informe'),
+            'tienda-informe' => Pages\TiendaInforme::route('/tienda-informe'),
+        ];
+    }
+    public static function getNavigationItems(): array
+    {
+        return [
+            ...parent::getNavigationItems(),
+            NavigationItem::make('Informe')
+                ->icon('heroicon-o-document-chart-bar')
+                ->url(Pages\Informe::getUrl())
+                ->sort(3),
+            NavigationItem::make('Informe de Tienda')
+                ->icon('heroicon-o-chart-bar')
+                ->url(Pages\TiendaInforme::getUrl())
+                ->sort(4),
         ];
     }
 
