@@ -40,13 +40,19 @@ class SaleResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(fn($query) => $query->with('client')) // 
             ->defaultSort('created_at', 'desc')
             ->columns([
                 Tables\Columns\TextColumn::make('client.nombre_completo')
                     ->label('Cliente')
                     ->searchable()
                     ->sortable()
-                    ->weight(FontWeight::Bold),
+                    ->weight(FontWeight::Bold)
+                    ->default('Sin cliente') // ← AGREGADO
+                    ->formatStateUsing(
+                        fn($state, $record) =>
+                        $record->client ? $record->client->nombre_completo : 'Sin cliente'
+                    ), // ← AGREGADO
 
                 Tables\Columns\TextColumn::make('concepto')
                     ->label('Concepto')
